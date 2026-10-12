@@ -6,12 +6,15 @@ import yfinance as yf
 
 app = Flask(__name__)
 
-# اطلاعات ربات تلگرام خود را اینجا وارد کنید
-TELEGRAM_BOT_TOKEN = "8728273739:AAFXg6QY4r33cF0tM1KSWswMQ3Ge32UuOJQ"
-TELEGRAM_CHAT_ID = "167186163"
+# خواندن اطلاعات امنیتی از متغیرهای محیطی سرور (بدون لو رفتن در گیت‌هاب)
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 
 def send_telegram_message(message):
+  if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    print("Telegram credentials missing!")
+    return
   url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
   payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
   try:
@@ -23,7 +26,6 @@ def send_telegram_message(message):
 @app.route("/")
 def run_strategy():
   try:
-    # دریافت دیتای طلای جهانی با نماد اسپات XAUUSD=X در بازه 5 دقیقه‌ای
     df = yf.download(
         tickers="XAUUSD=X", period="5d", interval="5m", progress=False
     )
@@ -31,24 +33,20 @@ def run_strategy():
     if df.empty:
       return "No data received", 500
 
-    # اصلاح فرمت ستون‌ها در صورت چندبعدی بودن
     if isinstance(df.columns, pd.MultiIndex):
       df.columns = df.columns.droplevel(1)
 
     df = df.dropna()
 
-    # محاسبه سقف و کف روزانه برای شبیه‌سازی منطق استراتژی شما
     df["Date"] = df.index.date
     daily_stats = df.groupby("Date").agg({"High": "max", "Low": "min"}).shift(1)
     df = df.join(daily_stats, on="Date", rsuffix="_daily")
 
-    # بررسی آخرین کندل بسته‌شده
     last_candle = df.iloc[-2]
     close_p = float(last_candle["Close"])
     y_high = float(last_candle["High_daily"])
     y_low = float(last_candle["Low_daily"])
 
-    # بررسی شرط‌های شکست سقف یا کف دیروز
     if not pd.isna(y_high) and float(last_candle["High"]) >= y_high:
       send_telegram_message(
           f"🚨 **سیگنال طلا (XAUUSD)**\n🔹 برخورد/شکست سقف دیروز\nقیمت فعلی: `{close_p}`"
