@@ -6,7 +6,6 @@ import yfinance as yf
 
 app = Flask(__name__)
 
-# خواندن اطلاعات امنیتی از متغیرهای محیطی سرور (بدون لو رفتن در گیت‌هاب)
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
@@ -18,7 +17,7 @@ def send_telegram_message(message):
   url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
   payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
   try:
-    requests.post(url, json=payload)
+    requests.post(url, json=payload, timeout=10)
   except Exception as e:
     print(f"Error sending telegram: {e}")
 
@@ -26,12 +25,12 @@ def send_telegram_message(message):
 @app.route("/")
 def run_strategy():
   try:
-    df = yf.download(
-        tickers="XAUUSD=X", period="5d", interval="5m", progress=False
-    )
+    # نماد GC=F روی سرورهای ابری مسدود نمی‌شود
+    ticker = yf.Ticker("GC=F")
+    df = ticker.history(period="5d", interval="5m")
 
     if df.empty:
-      return "No data received", 500
+      return "No data received from Yahoo Finance", 500
 
     if isinstance(df.columns, pd.MultiIndex):
       df.columns = df.columns.droplevel(1)
@@ -49,17 +48,19 @@ def run_strategy():
 
     if not pd.isna(y_high) and float(last_candle["High"]) >= y_high:
       send_telegram_message(
-          f"🚨 **سیگنال طلا (XAUUSD)**\n🔹 برخورد/شکست سقف دیروز\nقیمت فعلی: `{close_p}`"
+          f"🚨 **سیگنال طلا (XAUUSD)**\n🔹 برخورد/شکست سقف دیروز\nقیمت"
+          f" فعلی: `{close_p}`"
       )
       return "Buy Alert Sent", 200
 
     elif not pd.isna(y_low) and float(last_candle["Low"]) <= y_low:
       send_telegram_message(
-          f"🚨 **سیگنال طلا (XAUUSD)**\n🔸 برخورد/شکست کف دیروز\nقیمت فعلی: `{close_p}`"
+          f"🚨 **سیگنال طلا (XAUUSD)**\n🔸 برخورد/شکست کف دیروز\nقیمت"
+          f" فعلی: `{close_p}`"
       )
       return "Sell Alert Sent", 200
 
-    return "Checked - No Signal", 200
+    return "Checked - No Signal (OK)", 200
 
   except Exception as e:
     return f"Error: {str(e)}", 500
