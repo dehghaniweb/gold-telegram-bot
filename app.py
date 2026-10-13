@@ -3,7 +3,6 @@ import os
 from flask import Flask, request
 import pandas as pd
 import requests
-import yfinance as yf
 
 app = Flask(__name__)
 
@@ -36,6 +35,24 @@ def load_status():
   }
 
 
+def get_live_spot_price():
+  """دریافت قیمت دقیق و زنده اسپات طلا (XAUUSD)"""
+  try:
+    url = "https://query1.finance.yahoo.com/v8/finance/chart/XAUUSD=X?interval=1m&range=1d"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        )
+    }
+    res = requests.get(url, headers=headers, timeout=5)
+    data = res.json()
+    price = data["chart"]["result"][0]["meta"]["regularMarketPrice"]
+    return round(float(price), 2)
+  except:
+    st = load_status()
+    return st.get("price", 0)
+
+
 def send_telegram_message(message, reply_markup=None):
   if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
     return False
@@ -54,34 +71,48 @@ def send_telegram_message(message, reply_markup=None):
     return False
 
 
-# بررسی خودکار بازار (توسط cron-job صدا زده می‌شود)
+# بررسی خودکار بازار (توسط cron-job هر ۵ دقیقه صدا زده می‌شود)
 @app.route("/")
 def run_strategy():
   try:
-    ticker = yf.Ticker("GC=F")
-    df = ticker.history(period="3d", interval="5m", progress=False)
+    url = "https://query1.finance.yahoo.com/v8/finance/chart/XAUUSD=X?interval=5m&range=2d"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        )
+    }
+    response = requests.get(url, headers=headers, timeout=10)
+    data = response.json()
+
+    result = data["chart"]["result"][0]
+    timestamps = result["timestamp"]
+    quote = result["indicators"]["quote"][0]
+
+    df = pd.DataFrame({
+        "timestamp": pd.to_datetime(timestamps, unit="s"),
+        "open": quote["open"],
+        "high": quote["high"],
+        "low": quote["low"],
+        "close": quote["close"],
+    }).dropna()
 
     if df.empty:
       return "Data temporarily empty", 200
 
-    if isinstance(df.columns, pd.MultiIndex):
-      df.columns = df.columns.droplevel(1)
-
-    df = df.dropna()
     if len(df) < 3:
       return "Not enough candles", 200
 
     curr_candle = df.iloc[-2]
     prev_candle = df.iloc[-3]
 
-    candle_time = str(curr_candle.name)
-    c_close = round(float(curr_candle["Close"]), 2)
-    c_open = round(float(curr_candle["Open"]), 2)
-    c_high = round(float(curr_candle["High"]), 2)
-    c_low = round(float(curr_candle["Low"]), 2)
+    candle_time = str(curr_candle["timestamp"])
+    c_close = round(float(curr_candle["close"]), 2)
+    c_open = round(float(curr_candle["open"]), 2)
+    c_high = round(float(curr_candle["high"]), 2)
+    c_low = round(float(curr_candle["low"]), 2)
 
-    p_high = round(float(prev_candle["High"]), 2)
-    p_low = round(float(prev_candle["Low"]), 2)
+    p_high = round(float(prev_candle["high"]), 2)
+    p_low = round(float(prev_candle["low"]), 2)
 
     body_size = abs(c_close - c_open)
     candle_range = c_high - c_low if (c_high - c_low) > 0 else 0.001
@@ -107,28 +138,28 @@ def run_strategy():
       if star_buy:
         signal_name = "⭐ ستاره خرید طلا"
         send_telegram_message(
-            f"⭐ **ستاره خرید طلا (GC=F)**\nقیمت: `{c_close}`\nزمان:"
+            f"⭐ **ستاره خرید طلا (XAUUSD)**\nقیمت: `{c_close}`\nزمان:"
             f" `{candle_time}`",
             reply_markup=keyboard,
         )
       elif star_sell:
         signal_name = "⭐ ستاره فروش طلا"
         send_telegram_message(
-            f"⭐ **ستاره فروش طلا (GC=F)**\nقیمت: `{c_close}`\nزمان:"
+            f"⭐ **ستاره فروش طلا (XAUUSD)**\nقیمت: `{c_close}`\nزمان:"
             f" `{candle_time}`",
             reply_markup=keyboard,
         )
       elif green_circle:
         signal_name = "🟢 دایره سبز طلا"
         send_telegram_message(
-            f"🟢 **دایره سبز طلا (GC=F)**\nقیمت: `{c_close}`\nزمان:"
+            f"🟢 **دایره سبز طلا (XAUUSD)**\nقیمت: `{c_close}`\nزمان:"
             f" `{candle_time}`",
             reply_markup=keyboard,
         )
       elif red_circle:
         signal_name = "🔴 دایره قرمز طلا"
         send_telegram_message(
-            f"🔴 **دایره قرمز طلا (GC=F)**\nقیمت: `{c_close}`\nزمان:"
+            f"🔴 **دایره قرمز طلا (XAUUSD)**\nقیمت: `{c_close}`\nزمان:"
             f" `{candle_time}`",
             reply_markup=keyboard,
         )
@@ -165,14 +196,14 @@ def telegram_webhook():
   if "message" in update and "text" in update["message"]:
     chat_id = update["message"]["chat"]["id"]
     st = load_status()
+    live_p = get_live_spot_price()
     msg = (
         f"🤖 **ربات پایش طلا فعال است**\n\n"
+        f"💵 قیمت لحظه‌ای اسپات: `{live_p}`\n"
         f"🎯 آخرین سیگنال: `{st['signal']}`\n"
-        f"💰 قیمت ثبت شده: `{st['price']}`\n"
-        f"⏱ زمان کندل: `{st['time']}`\n\n"
-        f"برای دریافت آخرین وضعیت، روی دکمه زیر کلیک کنید:"
+        f"💰 قیمت زمان سیگنال: `{st['price']}`\n"
+        f"⏱ زمان کندل: `{st['time']}`"
     )
-    # ارسال پیام همراه با دکمه شیشه‌ای
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     requests.post(
         url,
@@ -188,18 +219,11 @@ def telegram_webhook():
   elif "callback_query" in update:
     callback = update["callback_query"]
     st = load_status()
-    try:
-      ticker = yf.Ticker("GC=F")
-      current_price = round(
-          float(ticker.history(period="1d", interval="1m")["Close"].iloc[-1]),
-          2,
-      )
-    except:
-      current_price = st["price"]
+    live_p = get_live_spot_price()
 
     msg = (
-        f"📊 **گزارش وضعیت لحظه‌ای طلا (GC=F)**\n\n"
-        f"💵 قیمت لحظه‌ای: `{current_price}`\n"
+        f"📊 **گزارش وضعیت لحظه‌ای طلا (XAUUSD)**\n\n"
+        f"💵 قیمت لحظه‌ای اسپات: `{live_p}`\n"
         f"🎯 آخرین سیگنال: `{st['signal']}`\n"
         f"💰 قیمت زمان سیگنال: `{st['price']}`\n"
         f"⏱ زمان کندل: `{st['time']}`"
@@ -209,12 +233,13 @@ def telegram_webhook():
   return "ok", 200
 
 
-# صفحه وضعیت پشتیبان
 @app.route("/status")
 def status_page():
   st = load_status()
+  live_p = get_live_spot_price()
   return (
-      f"<h2>📊 آخرین وضعیت ربات طلا</h2>"
+      f"<h2>📊 آخرین وضعیت ربات طلا (XAUUSD)</h2>"
+      f"<p><b>قیمت لحظه‌ای:</b> {live_p}</p>"
       f"<p><b>آخرین سیگنال:</b> {st['signal']}</p>"
       f"<p><b>قیمت ثبت شده:</b> {st['price']}</p>"
   )
