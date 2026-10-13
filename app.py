@@ -35,50 +35,71 @@ def load_status():
   }
 
 
-def fetch_spot_data(interval="5m", range_val="3d"):
-  """دریافت کندل‌های اسپات طلا (XAUUSD=X) مستقیماً از یاهو با هدرهای مرورگر"""
-  url = f"https://query1.finance.yahoo.com/v8/finance/chart/XAUUSD=X?interval={interval}&range={range_val}"
-  headers = {
-      "User-Agent": (
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
-          " like Gecko) Chrome/122.0.0.0 Safari/537.36"
-      ),
-      "Accept": "application/json",
-      "Referer": "https://finance.yahoo.com",
-  }
+def get_live_spot_price():
+  """دریافت قیمت لحظه‌ای اسپات طلا از API جایگزین و معتبر"""
   try:
+    # استفاده از API رایگان و بدون نیاز به کلید برای قیمت اسپات طلا
+    res = requests.get(
+        "https://api.gold-api.com/price/XAU", timeout=5
+    )  # یا منابع معتبر اسپات
+    data = res.json()
+    if "price" in data:
+      return round(float(data["price"]), 2)
+  except Exception:
+    pass
+
+  # روش پشتیبان دوم برای گرفتن قیمت اسپات
+  try:
+    res = requests.get("https://data-asg.goldprice.org/dbjson/usd", timeout=5)
+    data = res.json()
+    price = data["items"][0]["xauPrice"]
+    if price:
+      return round(float(price), 2)
+  except Exception:
+    pass
+
+  st = load_status()
+  return st.get("price", 0)
+
+
+def fetch_spot_candles():
+  """دریافت کندل‌ها برای تحلیل دایره و ستاره"""
+  try:
+    url = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=5m&range=3d"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        )
+    }
     response = requests.get(url, headers=headers, timeout=10)
     data = response.json()
     result = data["chart"]["result"][0]
     timestamps = result["timestamp"]
     quote = result["indicators"]["quote"][0]
 
+    # چون قیمت فیوچرز چند دلار با اسپات اختلاف دارد، برای اینکه تحلیل دایره‌ها دقیقا روی اسپات باشد،
+    # اختلاف لحظه‌ای را حساب کرده و به کندل‌ها اضافه می‌کنیم تا کاملا با اسپات مچ شوند
+    live_spot = get_live_spot_price()
+    latest_future = quote["close"][-1] if quote["close"] else live_spot
+    diff = live_spot - latest_future if latest_future > 0 else 0
+
     df = pd.DataFrame({
         "timestamp": pd.to_datetime(timestamps, unit="s"),
-        "open": quote["open"],
-        "high": quote["high"],
-        "low": quote["low"],
-        "close": quote["close"],
+        "open": [val + diff if val else 0 for val in quote["open"]],
+        "high": [val + diff if val else 0 for val in quote["high"]],
+        "low": [val + diff if val else 0 for val in quote["low"]],
+        "close": [val + diff if val else 0 for val in quote["close"]],
     }).dropna()
     return df
   except Exception:
     return pd.DataFrame()
 
 
-def get_live_spot_price():
-  """دریافت قیمت لحظه‌ای اسپات طلا"""
-  df = fetch_spot_data(interval="1m", range_val="1d")
-  if not df.empty:
-    return round(float(df["close"].iloc[-1]), 2)
-  st = load_status()
-  return st.get("price", 0)
-
-
-# بررسی خودکار بازار روی اسپات طلا (XAUUSD)
+# بررسی خودکار بازار روی اسپات
 @app.route("/")
 def run_strategy():
   try:
-    df = fetch_spot_data(interval="5m", range_val="3d")
+    df = fetch_spot_candles()
 
     if df.empty:
       return "Data temporarily empty", 200
@@ -156,7 +177,8 @@ def run_strategy():
             "ratio": round(body_ratio, 2),
         })
 
-    return f"Bot Active (Spot XAUUSD)! Last Signal: {signal_name} | Price: {c_close}", 200
+    live_p = get_live_spot_price()
+    return f"Bot Active (Spot API)! Price: {live_p}", 200
 
   except Exception as e:
     return f"Handled Exception: {str(e)}", 200
