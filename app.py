@@ -3,7 +3,6 @@ import os
 from flask import Flask, request
 import pandas as pd
 import requests
-import yfinance as yf
 
 app = Flask(__name__)
 
@@ -37,16 +36,23 @@ def load_status():
 
 
 def get_live_spot_price():
-  """دریافت قیمت دقیق اسپات طلا (XAUUSD)"""
+  """دریافت قیمت زنده اسپات طلا (XAUUSD) مستقیماً از یاهو"""
   try:
-    ticker = yf.Ticker("XAUUSD=X")
-    df = ticker.history(period="1d", interval="1m", progress=False)
-    if not df.empty:
-      if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.droplevel(1)
-      return round(float(df["Close"].iloc[-1]), 2)
+    url = "https://query1.finance.yahoo.com/v8/finance/chart/XAUUSD=X?interval=1m&range=1d"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
+            " like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+    }
+    res = requests.get(url, headers=headers, timeout=5)
+    data = res.json()
+    price = data["chart"]["result"][0]["meta"]["regularMarketPrice"]
+    if price:
+      return round(float(price), 2)
   except Exception:
     pass
+
   st = load_status()
   return st.get("price", 0)
 
@@ -55,30 +61,45 @@ def get_live_spot_price():
 @app.route("/")
 def run_strategy():
   try:
-    ticker = yf.Ticker("XAUUSD=X")
-    df = ticker.history(period="3d", interval="5m", progress=False)
+    url = "https://query1.finance.yahoo.com/v8/finance/chart/XAUUSD=X?interval=5m&range=3d"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
+            " like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+    }
+    response = requests.get(url, headers=headers, timeout=10)
+    data = response.json()
+
+    result = data["chart"]["result"][0]
+    timestamps = result["timestamp"]
+    quote = result["indicators"]["quote"][0]
+
+    df = pd.DataFrame({
+        "timestamp": pd.to_datetime(timestamps, unit="s"),
+        "open": quote["open"],
+        "high": quote["high"],
+        "low": quote["low"],
+        "close": quote["close"],
+    }).dropna()
 
     if df.empty:
       return "Data temporarily empty", 200
 
-    if isinstance(df.columns, pd.MultiIndex):
-      df.columns = df.columns.droplevel(1)
-
-    df = df.dropna()
     if len(df) < 3:
       return "Not enough candles", 200
 
     curr_candle = df.iloc[-2]
     prev_candle = df.iloc[-3]
 
-    candle_time = str(curr_candle.name)
-    c_close = round(float(curr_candle["Close"]), 2)
-    c_open = round(float(curr_candle["Open"]), 2)
-    c_high = round(float(curr_candle["High"]), 2)
-    c_low = round(float(curr_candle["Low"]), 2)
+    candle_time = str(curr_candle["timestamp"])
+    c_close = round(float(curr_candle["close"]), 2)
+    c_open = round(float(curr_candle["open"]), 2)
+    c_high = round(float(curr_candle["high"]), 2)
+    c_low = round(float(curr_candle["low"]), 2)
 
-    p_high = round(float(prev_candle["High"]), 2)
-    p_low = round(float(prev_candle["Low"]), 2)
+    p_high = round(float(prev_candle["high"]), 2)
+    p_low = round(float(prev_candle["low"]), 2)
 
     body_size = abs(c_close - c_open)
     candle_range = c_high - c_low if (c_high - c_low) > 0 else 0.001
@@ -138,7 +159,7 @@ def run_strategy():
             "ratio": round(body_ratio, 2),
         })
 
-    return f"Bot Active (Spot)! Last Signal: {signal_name} | Price: {c_close}", 200
+    return f"Bot Active (Spot API)! Last Signal: {signal_name} | Price: {c_close}", 200
 
   except Exception as e:
     return f"Handled Exception: {str(e)}", 200
