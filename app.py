@@ -8,7 +8,7 @@ app = Flask(__name__)
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# حافظه موقت برای ذخیره وضعیت آخرین سیگنال تا پیام تکراری ارسال نشود
+# ذخیره زمان آخرین سیگنال جهت جلوگیری از ارسال پیام تکراری
 last_signal_time = None
 
 
@@ -28,7 +28,7 @@ def run_strategy():
   global last_signal_time
 
   try:
-    # دریافت دیتای دقیق و اسپات طلا (XAUUSD) هم‌قیمت با تریدینگ‌ویو
+    # دریافت دیتای اسپات طلا (XAUUSD)
     url = "https://query1.finance.yahoo.com/v8/finance/chart/XAUUSD=X?interval=5m&range=2d"
     headers = {
         "User-Agent": (
@@ -53,52 +53,76 @@ def run_strategy():
     if df.empty:
       return "No data received", 500
 
-    # بررسی کندل قبلی بسته‌شده (برای اطمینان از تثبیت دایره/سیگنال)
-    last_candle = df.iloc[-2]
-    candle_time = str(last_candle["timestamp"])
-    close_p = round(float(last_candle["close"]), 2)
-    open_p = round(float(last_candle["open"]), 2)
-    high_p = round(float(last_candle["high"]), 2)
-    low_p = round(float(last_candle["low"]), 2)
+    # کندل‌های اخیر جهت بررسی الگوهای ستاره و دایره
+    curr_candle = df.iloc[-2]  # آخرین کندل کامل بسته‌شده
+    prev_candle = df.iloc[-3]  # کندل ماقبل آخر
 
-    # -------------------------------------------------------------
-    # منطق دایره‌های استراتژی 27 در 5 دقیقه
-    # -------------------------------------------------------------
-    body_size = abs(close_p - open_p)
-    candle_range = high_p - low_p
+    candle_time = str(curr_candle["timestamp"])
 
-    # تشخیص دایره سبز (سیگنال خرید با کیفیّت کندل و چرخش)
-    green_circle = (close_p > open_p) and (
-        body_size >= candle_range * 0.55
-    )  # کندل قدرتمند صعودی
+    c_close = round(float(curr_candle["close"]), 2)
+    c_open = round(float(curr_candle["open"]), 2)
+    c_high = round(float(curr_candle["high"]), 2)
+    c_low = round(float(curr_candle["low"]), 2)
 
-    # تشخیص دایره قرمز (سیگنال فروش با کیفیّت کندل و چرخش)
-    red_circle = (close_p < open_p) and (
-        body_size >= candle_range * 0.55
-    )  # کندل قدرتمند نزولی
+    p_close = round(float(prev_candle["close"]), 2)
+    p_open = round(float(prev_candle["open"]), 2)
+    p_high = round(float(prev_candle["high"]), 2)
+    p_low = round(float(prev_candle["low"]), 2)
 
-    # ارسال پیام تنها در صورت شکل‌گیری دایره جدید (جلوگیری از پیام‌های تکراری ۵ دقیقه‌ای)
+    # محاسبه پارامترهای کندل
+    body_size = abs(c_close - c_open)
+    candle_range = c_high - c_low if (c_high - c_low) > 0 else 0.001
+
+    # 1. منطق ستاره خرید (⭐ Buy Star) - برگشت قوی صعودی بعد از کف
+    star_buy = (c_close > c_open) and (c_close > p_high) and (c_low <= p_low)
+
+    # 2. منطق ستاره فروش (⭐ Sell Star) - برگشت قوی نزولی بعد از سقف
+    star_sell = (c_close < c_open) and (c_close < p_low) and (c_high >= p_high)
+
+    # 3. منطق دایره سبز (🟢 Green Circle)
+    green_circle = (c_close > c_open) and (body_size / candle_range >= 0.60)
+
+    # 4. منطق دایره قرمز (🔴 Red Circle)
+    red_circle = (c_close < c_open) and (body_size / candle_range >= 0.60)
+
+    # بررسی ثبت سیگنال جدید
     if candle_time != last_signal_time:
 
-      if green_circle:
+      if star_buy:
         last_signal_time = candle_time
         send_telegram_message(
-            f"🟢 **دایره سبز (سیگنال خرید طلا - XAUUSD)**\n"
-            f"قیمت دقیق اسپات: `{close_p}`\n"
-            f"تایم‌فریم: 5 دقیقه"
+            f"⭐ **سیگنال ستاره خرید طلا (XAUUSD)**\n"
+            f"قیمت اسپات: `{c_close}`\n"
+            f"زمان کندل: `{candle_time}`"
         )
-        return f"Green Circle Alert Sent for {close_p}", 200
+        return "Buy Star Alert Sent", 200
+
+      elif star_sell:
+        last_signal_time = candle_time
+        send_telegram_message(
+            f"⭐ **سیگنال ستاره فروش طلا (XAUUSD)**\n"
+            f"قیمت اسپات: `{c_close}`\n"
+            f"زمان کندل: `{candle_time}`"
+        )
+        return "Sell Star Alert Sent", 200
+
+      elif green_circle:
+        last_signal_time = candle_time
+        send_telegram_message(
+            f"🟢 **دایره سبز (خرید طلا - XAUUSD)**\n"
+            f"قیمت اسپات: `{c_close}`"
+        )
+        return "Green Circle Sent", 200
 
       elif red_circle:
         last_signal_time = candle_time
         send_telegram_message(
-            f"🔴 **دایره قرمز (سیگنال فروش طلا - XAUUSD)**\n"
-            f"قیمت دقیق اسپات: `{close_p}`\n"
-            f"تایم‌فریم: 5 دقیقه"
+            f"🔴 **دایره قرمز (فروش طلا - XAUUSD)**\n"
+            f"قیمت اسپات: `{c_close}`"
         )
-        return f"Red Circle Alert Sent for {close_p}", 200
+        return "Red Circle Sent", 200
 
-    return "Checked - No New Circle Signal", 200
+    return "Checked - No New Signal", 200
 
   except Exception as e:
     return f"Error: {str(e)}", 500
