@@ -1,3 +1,4 @@
+import json
 import os
 from flask import Flask
 import pandas as pd
@@ -8,27 +9,48 @@ app = Flask(__name__)
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# ذخیره زمان آخرین سیگنال جهت جلوگیری از ارسال پیام تکراری
-last_signal_time = None
+STATUS_FILE = "/tmp/last_signal_status.json"
+
+
+def save_status(data):
+  try:
+    with open(STATUS_FILE, "w") as f:
+      json.dump(data, f)
+  except Exception as e:
+    print(f"Error saving status: {e}")
+
+
+def load_status():
+  if os.path.exists(STATUS_FILE):
+    try:
+      with open(STATUS_FILE, "r") as f:
+        return json.load(f)
+    except:
+      pass
+  return {
+      "signal": "هنوز سیگنالی ثبت نشده است",
+      "price": 0,
+      "time": "-",
+      "ratio": 0,
+  }
 
 
 def send_telegram_message(message):
   if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-    return
+    return False
   url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
   payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
   try:
-    requests.post(url, json=payload, timeout=10)
+    res = requests.post(url, json=payload, timeout=10)
+    return res.status_code == 200
   except Exception as e:
     print(f"Error sending telegram: {e}")
+    return False
 
 
 @app.route("/")
 def run_strategy():
-  global last_signal_time
-
   try:
-    # دریافت دیتای اسپات طلا (XAUUSD)
     url = "https://query1.finance.yahoo.com/v8/finance/chart/XAUUSD=X?interval=5m&range=2d"
     headers = {
         "User-Agent": (
@@ -53,79 +75,86 @@ def run_strategy():
     if df.empty:
       return "No data received", 500
 
-    # کندل‌های اخیر جهت بررسی الگوهای ستاره و دایره
-    curr_candle = df.iloc[-2]  # آخرین کندل کامل بسته‌شده
-    prev_candle = df.iloc[-3]  # کندل ماقبل آخر
+    curr_candle = df.iloc[-2]
+    prev_candle = df.iloc[-3]
 
     candle_time = str(curr_candle["timestamp"])
-
     c_close = round(float(curr_candle["close"]), 2)
     c_open = round(float(curr_candle["open"]), 2)
     c_high = round(float(curr_candle["high"]), 2)
     c_low = round(float(curr_candle["low"]), 2)
 
-    p_close = round(float(prev_candle["close"]), 2)
-    p_open = round(float(prev_candle["open"]), 2)
     p_high = round(float(prev_candle["high"]), 2)
     p_low = round(float(prev_candle["low"]), 2)
 
-    # محاسبه پارامترهای کندل
     body_size = abs(c_close - c_open)
     candle_range = c_high - c_low if (c_high - c_low) > 0 else 0.001
+    body_ratio = body_size / candle_range
 
-    # 1. منطق ستاره خرید (⭐ Buy Star) - برگشت قوی صعودی بعد از کف
+    green_circle = (c_close > c_open) and (body_ratio >= 0.50)
+    red_circle = (c_close < c_open) and (body_ratio >= 0.50)
     star_buy = (c_close > c_open) and (c_close > p_high) and (c_low <= p_low)
-
-    # 2. منطق ستاره فروش (⭐ Sell Star) - برگشت قوی نزولی بعد از سقف
     star_sell = (c_close < c_open) and (c_close < p_low) and (c_high >= p_high)
 
-    # 3. منطق دایره سبز (🟢 Green Circle)
-    green_circle = (c_close > c_open) and (body_size / candle_range >= 0.60)
+    current_status = load_status()
+    last_time = current_status.get("time", "")
 
-    # 4. منطق دایره قرمز (🔴 Red Circle)
-    red_circle = (c_close < c_open) and (body_size / candle_range >= 0.60)
+    signal_name = "Checked - No New Signal"
 
-    # بررسی ثبت سیگنال جدید
-    if candle_time != last_signal_time:
-
+    if candle_time != last_time:
       if star_buy:
-        last_signal_time = candle_time
+        signal_name = "⭐ ستاره خرید طلا"
         send_telegram_message(
-            f"⭐ **سیگنال ستاره خرید طلا (XAUUSD)**\n"
-            f"قیمت اسپات: `{c_close}`\n"
-            f"زمان کندل: `{candle_time}`"
+            f"⭐ **ستاره خرید طلا (XAUUSD)**\nقیمت اسپات: `{c_close}`\nزمان:"
+            f" `{candle_time}`"
         )
-        return "Buy Star Alert Sent", 200
-
       elif star_sell:
-        last_signal_time = candle_time
+        signal_name = "⭐ ستاره فروش طلا"
         send_telegram_message(
-            f"⭐ **سیگنال ستاره فروش طلا (XAUUSD)**\n"
-            f"قیمت اسپات: `{c_close}`\n"
-            f"زمان کندل: `{candle_time}`"
+            f"⭐ **ستاره فروش طلا (XAUUSD)**\nقیمت اسپات: `{c_close}`\nزمان:"
+            f" `{candle_time}`"
         )
-        return "Sell Star Alert Sent", 200
-
       elif green_circle:
-        last_signal_time = candle_time
+        signal_name = "🟢 دایره سبز طلا"
         send_telegram_message(
-            f"🟢 **دایره سبز (خرید طلا - XAUUSD)**\n"
-            f"قیمت اسپات: `{c_close}`"
+            f"🟢 **دایره سبز طلا (XAUUSD)**\nقیمت اسپات: `{c_close}`\nزمان:"
+            f" `{candle_time}`"
         )
-        return "Green Circle Sent", 200
-
       elif red_circle:
-        last_signal_time = candle_time
+        signal_name = "🔴 دایره قرمز طلا"
         send_telegram_message(
-            f"🔴 **دایره قرمز (فروش طلا - XAUUSD)**\n"
-            f"قیمت اسپات: `{c_close}`"
+            f"🔴 **دایره قرمز طلا (XAUUSD)**\nقیمت اسپات: `{c_close}`\nزمان:"
+            f" `{candle_time}`"
         )
-        return "Red Circle Sent", 200
 
-    return "Checked - No New Signal", 200
+      if signal_name != "Checked - No New Signal":
+        save_status({
+            "signal": signal_name,
+            "price": c_close,
+            "time": candle_time,
+            "ratio": round(body_ratio, 2),
+        })
+
+    return (
+        f"Bot is Live & Active! Last Action: {signal_name} | Price: {c_close}",
+        200,
+    )
 
   except Exception as e:
     return f"Error: {str(e)}", 500
+
+
+# صفحه اختصاصی برای دیدن آخرین وضعیت ربات با یک کلیک
+@app.route("/status")
+def status_page():
+  st = load_status()
+  return (
+      f"<h2>📊 آخرین وضعیت ربات طلا (XAUUSD)</h2>"
+      f"<p><b>آخرین سیگنال:</b> {st['signal']}</p>"
+      f"<p><b>قیمت ثبت شده:</b> {st['price']}</p>"
+      f"<p><b>زمان کندل:</b> {st['time']}</p>"
+      f"<hr><p>سیستم کاملاً فعال و متصل به رندر است. ✅</p>"
+  )
 
 
 if __name__ == "__main__":
