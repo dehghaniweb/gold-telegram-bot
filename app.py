@@ -35,42 +35,20 @@ def load_status():
   }
 
 
-def get_live_spot_price():
-  """دریافت قیمت زنده اسپات طلا (XAUUSD) مستقیماً از یاهو"""
+def fetch_spot_data(interval="5m", range_val="3d"):
+  """دریافت کندل‌های اسپات طلا (XAUUSD=X) مستقیماً از یاهو با هدرهای مرورگر"""
+  url = f"https://query1.finance.yahoo.com/v8/finance/chart/XAUUSD=X?interval={interval}&range={range_val}"
+  headers = {
+      "User-Agent": (
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
+          " like Gecko) Chrome/122.0.0.0 Safari/537.36"
+      ),
+      "Accept": "application/json",
+      "Referer": "https://finance.yahoo.com",
+  }
   try:
-    url = "https://query1.finance.yahoo.com/v8/finance/chart/XAUUSD=X?interval=1m&range=1d"
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
-            " like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-    }
-    res = requests.get(url, headers=headers, timeout=5)
-    data = res.json()
-    price = data["chart"]["result"][0]["meta"]["regularMarketPrice"]
-    if price:
-      return round(float(price), 2)
-  except Exception:
-    pass
-
-  st = load_status()
-  return st.get("price", 0)
-
-
-# بررسی خودکار بازار بر اساس اسپات طلا (XAUUSD=X)
-@app.route("/")
-def run_strategy():
-  try:
-    url = "https://query1.finance.yahoo.com/v8/finance/chart/XAUUSD=X?interval=5m&range=3d"
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
-            " like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-    }
     response = requests.get(url, headers=headers, timeout=10)
     data = response.json()
-
     result = data["chart"]["result"][0]
     timestamps = result["timestamp"]
     quote = result["indicators"]["quote"][0]
@@ -82,6 +60,25 @@ def run_strategy():
         "low": quote["low"],
         "close": quote["close"],
     }).dropna()
+    return df
+  except Exception:
+    return pd.DataFrame()
+
+
+def get_live_spot_price():
+  """دریافت قیمت لحظه‌ای اسپات طلا"""
+  df = fetch_spot_data(interval="1m", range_val="1d")
+  if not df.empty:
+    return round(float(df["close"].iloc[-1]), 2)
+  st = load_status()
+  return st.get("price", 0)
+
+
+# بررسی خودکار بازار روی اسپات طلا (XAUUSD)
+@app.route("/")
+def run_strategy():
+  try:
+    df = fetch_spot_data(interval="5m", range_val="3d")
 
     if df.empty:
       return "Data temporarily empty", 200
@@ -116,38 +113,38 @@ def run_strategy():
     signal_name = "Checked - No New Signal"
     keyboard = {
         "inline_keyboard": [[{
-            "text": "🔄 آخرین وضعیت بازار و قیمت",
+            "text": "🔄 آخرین وضعیت بازار و قیمت اسپات",
             "callback_data": "check_status",
         }]]
     }
 
     if candle_time != str(last_time):
       if star_buy:
-        signal_name = "⭐ ستاره خرید طلا"
+        signal_name = "⭐ ستاره خرید اسپات طلا"
         send_telegram_message(
-            f"⭐ **ستاره خرید طلا (XAUUSD)**\nقیمت: `{c_close}`\nزمان:"
-            f" `{candle_time}`",
+            f"⭐ **ستاره خرید اسپات طلا (XAUUSD)**\nقیمت:"
+            f" `{c_close}`\nزمان: `{candle_time}`",
             reply_markup=keyboard,
         )
       elif star_sell:
-        signal_name = "⭐ ستاره فروش طلا"
+        signal_name = "⭐ ستاره فروش اسپات طلا"
         send_telegram_message(
-            f"⭐ **ستاره فروش طلا (XAUUSD)**\nقیمت: `{c_close}`\nزمان:"
-            f" `{candle_time}`",
+            f"⭐ **ستاره فروش اسپات طلا (XAUUSD)**\nقیمت:"
+            f" `{c_close}`\nزمان: `{candle_time}`",
             reply_markup=keyboard,
         )
       elif green_circle:
-        signal_name = "🟢 دایره سبز طلا"
+        signal_name = "🟢 دایره سبز اسپات طلا"
         send_telegram_message(
-            f"🟢 **دایره سبز طلا (XAUUSD)**\nقیمت: `{c_close}`\nزمان:"
-            f" `{candle_time}`",
+            f"🟢 **دایره سبز اسپات طلا (XAUUSD)**\nقیمت:"
+            f" `{c_close}`\nزمان: `{candle_time}`",
             reply_markup=keyboard,
         )
       elif red_circle:
-        signal_name = "🔴 دایره قرمز طلا"
+        signal_name = "🔴 دایره قرمز اسپات طلا"
         send_telegram_message(
-            f"🔴 **دایره قرمز طلا (XAUUSD)**\nقیمت: `{c_close}`\nزمان:"
-            f" `{candle_time}`",
+            f"🔴 **دایره قرمز اسپات طلا (XAUUSD)**\nقیمت:"
+            f" `{c_close}`\nزمان: `{candle_time}`",
             reply_markup=keyboard,
         )
 
@@ -159,7 +156,7 @@ def run_strategy():
             "ratio": round(body_ratio, 2),
         })
 
-    return f"Bot Active (Spot API)! Last Signal: {signal_name} | Price: {c_close}", 200
+    return f"Bot Active (Spot XAUUSD)! Last Signal: {signal_name} | Price: {c_close}", 200
 
   except Exception as e:
     return f"Handled Exception: {str(e)}", 200
@@ -192,7 +189,7 @@ def telegram_webhook():
 
   keyboard = {
       "inline_keyboard": [[{
-          "text": "🔄 آخرین وضعیت بازار و قیمت",
+          "text": "🔄 آخرین وضعیت بازار و قیمت اسپات",
           "callback_data": "check_status",
       }]]
   }
@@ -202,7 +199,7 @@ def telegram_webhook():
     st = load_status()
     live_p = get_live_spot_price()
     msg = (
-        f"🤖 **ربات پایش اسپات طلا فعال است**\n\n"
+        f"🤖 **ربات پایش اسپات طلا (XAUUSD)**\n\n"
         f"💵 قیمت لحظه‌ای اسپات: `{live_p}`\n"
         f"🎯 آخرین سیگنال: `{st['signal']}`\n"
         f"💰 قیمت زمان سیگنال: `{st['price']}`\n"
@@ -240,8 +237,8 @@ def status_page():
   st = load_status()
   live_p = get_live_spot_price()
   return (
-      f"<h2>📊 آخرین وضعیت ربات اسپات طلا</h2>"
-      f"<p><b>قیمت لحظه‌ای:</b> {live_p}</p>"
+      f"<h2>📊 آخرین وضعیت ربات اسپات طلا (XAUUSD)</h2>"
+      f"<p><b>قیمت لحظه‌ای اسپات:</b> {live_p}</p>"
       f"<p><b>آخرین سیگنال:</b> {st['signal']}</p>"
   )
 
