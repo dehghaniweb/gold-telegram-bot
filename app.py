@@ -3,6 +3,7 @@ import os
 from flask import Flask, request
 import pandas as pd
 import requests
+import yfinance as yf
 
 app = Flask(__name__)
 
@@ -36,83 +37,48 @@ def load_status():
 
 
 def get_live_spot_price():
-  """دریافت قیمت دقیق و زنده اسپات طلا (XAUUSD)"""
+  """دریافت قیمت دقیق اسپات طلا (XAUUSD)"""
   try:
-    url = "https://query1.finance.yahoo.com/v8/finance/chart/XAUUSD=X?interval=1m&range=1d"
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        )
-    }
-    res = requests.get(url, headers=headers, timeout=5)
-    data = res.json()
-    price = data["chart"]["result"][0]["meta"]["regularMarketPrice"]
-    return round(float(price), 2)
-  except:
-    st = load_status()
-    return st.get("price", 0)
-
-
-def send_telegram_message(message, reply_markup=None):
-  if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-    return False
-  url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-  payload = {
-      "chat_id": TELEGRAM_CHAT_ID,
-      "text": message,
-      "parse_mode": "Markdown",
-  }
-  if reply_markup:
-    payload["reply_markup"] = reply_markup
-  try:
-    res = requests.post(url, json=payload, timeout=10)
-    return res.json()
+    ticker = yf.Ticker("XAUUSD=X")
+    df = ticker.history(period="1d", interval="1m", progress=False)
+    if not df.empty:
+      if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.droplevel(1)
+      return round(float(df["Close"].iloc[-1]), 2)
   except Exception:
-    return False
+    pass
+  st = load_status()
+  return st.get("price", 0)
 
 
-# بررسی خودکار بازار (توسط cron-job هر ۵ دقیقه صدا زده می‌شود)
+# بررسی خودکار بازار بر اساس اسپات طلا (XAUUSD=X)
 @app.route("/")
 def run_strategy():
   try:
-    url = "https://query1.finance.yahoo.com/v8/finance/chart/XAUUSD=X?interval=5m&range=2d"
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        )
-    }
-    response = requests.get(url, headers=headers, timeout=10)
-    data = response.json()
-
-    result = data["chart"]["result"][0]
-    timestamps = result["timestamp"]
-    quote = result["indicators"]["quote"][0]
-
-    df = pd.DataFrame({
-        "timestamp": pd.to_datetime(timestamps, unit="s"),
-        "open": quote["open"],
-        "high": quote["high"],
-        "low": quote["low"],
-        "close": quote["close"],
-    }).dropna()
+    ticker = yf.Ticker("XAUUSD=X")
+    df = ticker.history(period="3d", interval="5m", progress=False)
 
     if df.empty:
       return "Data temporarily empty", 200
 
+    if isinstance(df.columns, pd.MultiIndex):
+      df.columns = df.columns.droplevel(1)
+
+    df = df.dropna()
     if len(df) < 3:
       return "Not enough candles", 200
 
     curr_candle = df.iloc[-2]
     prev_candle = df.iloc[-3]
 
-    candle_time = str(curr_candle["timestamp"])
-    c_close = round(float(curr_candle["close"]), 2)
-    c_open = round(float(curr_candle["open"]), 2)
-    c_high = round(float(curr_candle["high"]), 2)
-    c_low = round(float(curr_candle["low"]), 2)
+    candle_time = str(curr_candle.name)
+    c_close = round(float(curr_candle["Close"]), 2)
+    c_open = round(float(curr_candle["Open"]), 2)
+    c_high = round(float(curr_candle["High"]), 2)
+    c_low = round(float(curr_candle["Low"]), 2)
 
-    p_high = round(float(prev_candle["high"]), 2)
-    p_low = round(float(prev_candle["low"]), 2)
+    p_high = round(float(prev_candle["High"]), 2)
+    p_low = round(float(prev_candle["Low"]), 2)
 
     body_size = abs(c_close - c_open)
     candle_range = c_high - c_low if (c_high - c_low) > 0 else 0.001
@@ -172,10 +138,28 @@ def run_strategy():
             "ratio": round(body_ratio, 2),
         })
 
-    return f"Bot Active! Last Signal: {signal_name} | Price: {c_close}", 200
+    return f"Bot Active (Spot)! Last Signal: {signal_name} | Price: {c_close}", 200
 
   except Exception as e:
     return f"Handled Exception: {str(e)}", 200
+
+
+def send_telegram_message(message, reply_markup=None):
+  if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    return False
+  url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+  payload = {
+      "chat_id": TELEGRAM_CHAT_ID,
+      "text": message,
+      "parse_mode": "Markdown",
+  }
+  if reply_markup:
+    payload["reply_markup"] = reply_markup
+  try:
+    res = requests.post(url, json=payload, timeout=10)
+    return res.json()
+  except Exception:
+    return False
 
 
 # دریافت پیام‌ها و کلیک‌ها از تلگرام (Webhook)
@@ -192,13 +176,12 @@ def telegram_webhook():
       }]]
   }
 
-  # اگر کاربر هر متنی به ربات فرستاد
   if "message" in update and "text" in update["message"]:
     chat_id = update["message"]["chat"]["id"]
     st = load_status()
     live_p = get_live_spot_price()
     msg = (
-        f"🤖 **ربات پایش طلا فعال است**\n\n"
+        f"🤖 **ربات پایش اسپات طلا فعال است**\n\n"
         f"💵 قیمت لحظه‌ای اسپات: `{live_p}`\n"
         f"🎯 آخرین سیگنال: `{st['signal']}`\n"
         f"💰 قیمت زمان سیگنال: `{st['price']}`\n"
@@ -215,14 +198,12 @@ def telegram_webhook():
         },
     )
 
-  # اگر کاربر روی دکمه شیشه‌ای کلیک کرد
   elif "callback_query" in update:
-    callback = update["callback_query"]
     st = load_status()
     live_p = get_live_spot_price()
 
     msg = (
-        f"📊 **گزارش وضعیت لحظه‌ای طلا (XAUUSD)**\n\n"
+        f"📊 **گزارش وضعیت لحظه‌ای اسپات طلا (XAUUSD)**\n\n"
         f"💵 قیمت لحظه‌ای اسپات: `{live_p}`\n"
         f"🎯 آخرین سیگنال: `{st['signal']}`\n"
         f"💰 قیمت زمان سیگنال: `{st['price']}`\n"
@@ -238,10 +219,9 @@ def status_page():
   st = load_status()
   live_p = get_live_spot_price()
   return (
-      f"<h2>📊 آخرین وضعیت ربات طلا (XAUUSD)</h2>"
+      f"<h2>📊 آخرین وضعیت ربات اسپات طلا</h2>"
       f"<p><b>قیمت لحظه‌ای:</b> {live_p}</p>"
       f"<p><b>آخرین سیگنال:</b> {st['signal']}</p>"
-      f"<p><b>قیمت ثبت شده:</b> {st['price']}</p>"
   )
 
 
