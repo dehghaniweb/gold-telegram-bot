@@ -59,7 +59,7 @@ def send_telegram_message(message, reply_markup=None):
 def run_strategy():
   try:
     ticker = yf.Ticker("GC=F")
-    df = ticker.history(period="5d", interval="5m", progress=False)
+    df = ticker.history(period="3d", interval="5m", progress=False)
 
     if df.empty:
       return "Data temporarily empty", 200
@@ -147,46 +147,77 @@ def run_strategy():
     return f"Handled Exception: {str(e)}", 200
 
 
-# دریافت کلیک‌ها و پیام‌ها از تلگرام (Webhook)
+# دریافت پیام‌ها و کلیک‌ها از تلگرام (Webhook)
 @app.route(f"/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
 def telegram_webhook():
   update = request.get_json()
   if not update:
     return "ok", 200
 
+  keyboard = {
+      "inline_keyboard": [[{
+          "text": "🔄 آخرین وضعیت بازار و قیمت",
+          "callback_data": "check_status",
+      }]]
+  }
+
+  # اگر کاربر هر متنی به ربات فرستاد
+  if "message" in update and "text" in update["message"]:
+    chat_id = update["message"]["chat"]["id"]
+    st = load_status()
+    msg = (
+        f"🤖 **ربات پایش طلا فعال است**\n\n"
+        f"🎯 آخرین سیگنال: `{st['signal']}`\n"
+        f"💰 قیمت ثبت شده: `{st['price']}`\n"
+        f"⏱ زمان کندل: `{st['time']}`\n\n"
+        f"برای دریافت آخرین وضعیت، روی دکمه زیر کلیک کنید:"
+    )
+    # ارسال پیام همراه با دکمه شیشه‌ای
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    requests.post(
+        url,
+        json={
+            "chat_id": chat_id,
+            "text": msg,
+            "parse_mode": "Markdown",
+            "reply_markup": keyboard,
+        },
+    )
+
   # اگر کاربر روی دکمه شیشه‌ای کلیک کرد
-  if "callback_query" in update:
+  elif "callback_query" in update:
     callback = update["callback_query"]
-    chat_id = callback["message"]["chat"]["id"]
-    callback_data = callback["data"]
-
-    if callback_data == "check_status":
-      st = load_status()
-      try:
-        ticker = yf.Ticker("GC=F")
-        current_price = round(
-            float(ticker.history(period="1d", interval="1m")["Close"].iloc[-1]),
-            2,
-        )
-      except:
-        current_price = st["price"]
-
-      msg = (
-          f"📊 **گزارش وضعیت لحظه‌ای طلا (GC=F)**\n\n"
-          f"💵 قیمت لحظه‌ای: `{current_price}`\n"
-          f"🎯 آخرین سیگنال ثبت شده: `{st['signal']}`\n"
-          f"💰 قیمت زمان سیگنال: `{st['price']}`\n"
-          f"⏱ زمان کندل: `{st['time']}`"
+    st = load_status()
+    try:
+      ticker = yf.Ticker("GC=F")
+      current_price = round(
+          float(ticker.history(period="1d", interval="1m")["Close"].iloc[-1]),
+          2,
       )
-      send_telegram_message(msg)
+    except:
+      current_price = st["price"]
+
+    msg = (
+        f"📊 **گزارش وضعیت لحظه‌ای طلا (GC=F)**\n\n"
+        f"💵 قیمت لحظه‌ای: `{current_price}`\n"
+        f"🎯 آخرین سیگنال: `{st['signal']}`\n"
+        f"💰 قیمت زمان سیگنال: `{st['price']}`\n"
+        f"⏱ زمان کندل: `{st['time']}`"
+    )
+    send_telegram_message(msg, reply_markup=keyboard)
 
   return "ok", 200
 
 
+# صفحه وضعیت پشتیبان
 @app.route("/status")
 def status_page():
   st = load_status()
-  return f"<h2>📊 آخرین وضعیت: {st['signal']}</h2><p>قیمت: {st['price']}</p>"
+  return (
+      f"<h2>📊 آخرین وضعیت ربات طلا</h2>"
+      f"<p><b>آخرین سیگنال:</b> {st['signal']}</p>"
+      f"<p><b>قیمت ثبت شده:</b> {st['price']}</p>"
+  )
 
 
 if __name__ == "__main__":
